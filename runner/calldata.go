@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	htmlTemplate "html/template"
 	"math/rand"
 	"strings"
+	"sync"
 	"text/template"
 	"text/template/parse"
 	"time"
@@ -18,8 +20,13 @@ import (
 const charset = "abcdefghijklmnopqrstuvwxyz" +
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-var seededRand *rand.Rand = rand.New(
-	rand.NewSource(time.Now().UnixNano()))
+var seededRandPool = sync.Pool{
+	New: func() interface{} {
+		return rand.New(rand.NewSource(time.Now().UnixNano()))
+	},
+}
+
+var sprigFuncMap htmlTemplate.FuncMap = sprig.FuncMap()
 
 // CallData represents contextualized data available for templating
 type CallData struct {
@@ -50,25 +57,28 @@ var tmplFuncMap = template.FuncMap{
 // newCallData returns new CallData
 func newCallData(
 	mtd *desc.MethodDescriptor,
-	funcs template.FuncMap,
-	workerID string, reqNum int64) *CallData {
+	workerID string, reqNum int64, withFuncs, withTemplateData bool, funcs template.FuncMap) *CallData {
 
-	fns := make(template.FuncMap, len(funcs)+2)
-	for k, v := range tmplFuncMap {
-		fns[k] = v
-	}
+	var t *template.Template
+	if withTemplateData {
+		t = template.New("call_template_data")
 
-	for k, v := range sprig.FuncMap() {
-		fns[k] = v
-	}
+		if withFuncs {
+			t = t.
+				Funcs(tmplFuncMap).
+				Funcs(template.FuncMap(sprigFuncMap))
 
-	if len(funcs) > 0 {
-		for k, v := range funcs {
-			fns[k] = v
+			if len(funcs) > 0 {
+				fns := make(template.FuncMap, len(funcs))
+
+				for k, v := range funcs {
+					fns[k] = v
+				}
+
+				t = t.Funcs(fns)
+			}
 		}
 	}
-
-	t := template.New("call_template_data").Funcs(fns)
 
 	now := time.Now()
 	newUUID, _ := uuid.NewRandom()
@@ -118,6 +128,10 @@ func (td *CallData) Regenerate() *CallData {
 }
 
 func (td *CallData) execute(data string) (*bytes.Buffer, error) {
+	if td.t == nil {
+		return nil, nil
+	}
+
 	t, err := td.t.Parse(data)
 	if err != nil {
 		return nil, err
@@ -133,6 +147,10 @@ func (td *CallData) execute(data string) (*bytes.Buffer, error) {
 // The *parse.Tree field is exported only for use by html/template
 // and should be treated as unexported by all other clients.
 func (td *CallData) hasAction(data string) (bool, error) {
+	if td.t == nil {
+		return false, nil
+	}
+
 	t, err := td.t.Parse(data)
 	if err != nil {
 		return false, err
@@ -164,7 +182,10 @@ func (td *CallData) ExecuteData(data string) ([]byte, error) {
 	if len(data) > 0 {
 		input := []byte(data)
 		tpl, err := td.execute(data)
-		if err == nil {
+		if err != nil {
+			return nil, err
+		}
+		if tpl != nil {
 			input = tpl.Bytes()
 		}
 
@@ -180,7 +201,7 @@ func (td *CallData) executeMetadata(metadata string) (map[string]string, error) 
 	if len(metadata) > 0 {
 		input := []byte(metadata)
 		tpl, err := td.execute(metadata)
-		if err == nil {
+		if err == nil && tpl != nil {
 			input = tpl.Bytes()
 		}
 
@@ -213,15 +234,21 @@ const minLen = 2
 
 func stringWithCharset(length int, charset string) string {
 	b := make([]byte, length)
+	rng := seededRandPool.Get().(*rand.Rand)
+	defer seededRandPool.Put(rng)
 	for i := range b {
-		b[i] = charset[seededRand.Intn(len(charset))]
+		b[i] = charset[rng.Intn(len(charset))]
 	}
 	return string(b)
 }
 
 func randomString(length int) string {
 	if length <= 0 {
-		length = seededRand.Intn(maxLen-minLen+1) + minLen
+		func() {
+			rng := seededRandPool.Get().(*rand.Rand)
+			defer seededRandPool.Put(rng)
+			length = rng.Intn(maxLen-minLen+1) + minLen
+		}()
 	}
 
 	return stringWithCharset(length, charset)
@@ -235,6 +262,7 @@ func randomInt(min, max int) int {
 	if max <= 0 {
 		max = 1
 	}
-
-	return seededRand.Intn(max-min) + min
+	rng := seededRandPool.Get().(*rand.Rand)
+	defer seededRandPool.Put(rng)
+	return rng.Intn(max-min) + min
 }

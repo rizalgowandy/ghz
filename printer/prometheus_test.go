@@ -41,6 +41,7 @@ func TestPrinter_printPrometheus(t *testing.T) {
 					"Internal":         3,
 					"DeadlineExceeded": 2},
 				Options: runner.Options{
+					Name:         "run name",
 					Call:         "helloworld.Greeter.SayHello",
 					Proto:        "/apis/greeter.proto",
 					Host:         "0.0.0.0:50051",
@@ -130,7 +131,7 @@ func TestPrinter_printPrometheus(t *testing.T) {
 			// parse actual
 			var actualMetricFamilies []*promtypes.MetricFamily
 			r := bytes.NewReader([]byte(actual))
-			decoder := expfmt.NewDecoder(r, expfmt.FmtText)
+			decoder := expfmt.NewDecoder(r, expfmt.NewFormat(expfmt.TypeTextPlain))
 			for {
 				metric := &promtypes.MetricFamily{}
 				err := decoder.Decode(metric)
@@ -147,7 +148,7 @@ func TestPrinter_printPrometheus(t *testing.T) {
 			// parse expected
 			var expectedMetricFamilies []*promtypes.MetricFamily
 			r = bytes.NewReader([]byte(tt.expected))
-			decoder = expfmt.NewDecoder(r, expfmt.FmtText)
+			decoder = expfmt.NewDecoder(r, expfmt.NewFormat(expfmt.TypeTextPlain))
 			for {
 				metric := &promtypes.MetricFamily{}
 				err := decoder.Decode(metric)

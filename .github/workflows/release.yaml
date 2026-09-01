@@ -12,30 +12,48 @@ jobs:
       matrix:
         target:
           - linux-x86_64
+          - linux-arm64
           - darwin-x86_64
+          - darwin-arm64
           - windows-x86_64
         include:
           - target: linux-x86_64
             os: ubuntu-latest
             name: ghz-linux-x86_64.tar.gz
+            goos: linux
+            goarch: amd64
+          - target: linux-arm64
+            os: ubuntu-latest
+            name: ghz-linux-arm64.tar.gz
+            goos: linux
+            goarch: arm64
           - target: darwin-x86_64
             os: macOS-latest
             name: ghz-darwin-x86_64.tar.gz
+            goos: darwin
+            goarch: amd64
+          - target: darwin-arm64
+            os: macOS-latest
+            name: ghz-darwin-arm64.tar.gz
+            goos: darwin
+            goarch: arm64
           - target: windows-x86_64
             os: windows-latest
             name: ghz-windows-x86_64.zip
+            goos: windows
+            goarch: amd64
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v1
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.17
+          go-version: 1.23.0
 
       - name: Get current time
-        uses: gerred/actions/current-time@master
+        uses: josStorer/get-current-time@v2.0.2
         id: current-time
 
       - name: Get the version
@@ -44,14 +62,23 @@ jobs:
         shell: bash
 
       - name: Build ghz
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir ./dist/
           mkdir ./dist/${{ matrix.target }}/
           go build -ldflags="-s -w -X 'main.version=${{ steps.get_tag_version.outputs.TAG_VERSION  }}' -X 'main.commit=${{ github.sha }}' -X 'main.date=${{ steps.current-time.outputs.time }}'" -o ./dist/${{ matrix.target }}/ ./cmd/ghz/...
+          # file ./dist/${{ matrix.target }}/ghz | grep -F ', statically linked,'
 
       - name: Build ghz-web
         env:
           CGO_ENABLED: 1
+          # various issues with GitHub actions, ARM and CGO
+          # disable for now
+          # GOOS: ${{ matrix.goos }}
+          # GOARCH: ${{ matrix.goarch }}
         run: |
           go build -ldflags="-s -w -X 'main.version=${{ github.ref }}' -X 'main.commit=${{ github.sha }}' -X 'main.date=${{ steps.current-time.outputs.time }}'" -o ./dist/${{ matrix.target }}/ ./cmd/ghz-web/...
 
@@ -71,7 +98,7 @@ jobs:
           cd -
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}
@@ -82,7 +109,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Prune & Unshallow
         run: git fetch --prune --unshallow
@@ -95,17 +122,27 @@ jobs:
 
       # These can be squashed when https://github.com/actions/download-artifact/issues/6 is closed
       - name: Download releases from github_build
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
         with:
           name: ghz-linux-x86_64.tar.gz
           path: .
       - name: Download releases from github_build
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
+        with:
+          name: ghz-linux-arm64.tar.gz
+          path: .
+      - name: Download releases from github_build
+        uses: actions/download-artifact@v4
         with:
           name: ghz-darwin-x86_64.tar.gz
           path: .
       - name: Download releases from github_build
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
+        with:
+          name: ghz-darwin-arm64.tar.gz
+          path: .
+      - name: Download releases from github_build
+        uses: actions/download-artifact@v4
         with:
           name: ghz-windows-x86_64.zip
           path: .
@@ -115,9 +152,8 @@ jobs:
 
       - name: Generate release notes
         run: |
-          # Temporary fix for https://github.com/actions/setup-go/issues/14
           export PATH=$PATH:$(go env GOPATH)/bin
-          go get -u github.com/git-chglog/git-chglog/cmd/git-chglog
+          go install github.com/git-chglog/git-chglog/cmd/git-chglog@latest
           # git-chglog -c .chglog/config.yml $(git describe --tags $(git rev-list --tags --max-count=1))
           git-chglog -c .chglog/config.yml ${{ env.RELEASE_VERSION }} > RELEASE-${{ env.RELEASE_VERSION }}.md
       - name: Create GitHub release ${{ matrix.target }}
@@ -126,8 +162,12 @@ jobs:
           files: |
             ghz-linux-x86_64.tar.gz
             ghz-linux-x86_64.tar.gz.sha256
+            ghz-linux-arm64.tar.gz
+            ghz-linux-arm64.tar.gz.sha256
             ghz-darwin-x86_64.tar.gz
             ghz-darwin-x86_64.tar.gz.sha256
+            ghz-darwin-arm64.tar.gz
+            ghz-darwin-arm64.tar.gz.sha256
             ghz-windows-x86_64.zip
             ghz-windows-x86_64.zip.sha256
           body_path: RELEASE-${{ env.RELEASE_VERSION }}.md
@@ -137,10 +177,45 @@ jobs:
   update_brew_formula:
     name: Update Brew Formula
     needs: github_release
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        formula: [ghz, ghz-web]
+    steps:
+      - uses: dawidd6/action-homebrew-bump-formula@v3
+        with:
+          formula: ${{ matrix.formula }}
+          token: ${{ secrets.GH_PAGES_ACTION_TOKEN }}
+
+  push_docker_image:
+    name: Push Docker image
+    needs: github_release
     runs-on: ubuntu-latest
     steps:
-      - uses: mislav/bump-homebrew-formula-action@v1.6
-        with:
-          formula-name: ghz
-        env:
-          COMMITTER_TOKEN: ${{ secrets.GH_PAGES_ACTION_TOKEN }}
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set Versions
+      uses: actions/github-script@v6
+      id: set_version
+      with:
+        script: |
+          const tag = context.ref.substring(10)
+          const no_v = tag.replace('v', '')
+          core.setOutput('tag', tag)
+          core.setOutput('nov', no_v)
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and Push Docker Image
+      uses: docker/build-push-action@v2
+      with:
+        push: true
+        tags: |
+            ghcr.io/${{ github.repository }}:${{steps.set_version.outputs.nov}}
+            ghcr.io/${{ github.repository }}:latest

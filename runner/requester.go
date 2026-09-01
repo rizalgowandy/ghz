@@ -18,10 +18,9 @@ import (
 	"go.uber.org/multierr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
-
-	reflectpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 
 	// To register the xds resolvers and balancers.
 	_ "google.golang.org/grpc/xds"
@@ -109,7 +108,7 @@ func NewRequester(c *RunConfig) (*Requester, error) {
 
 		refCtx := metadata.NewOutgoingContext(ctx, md)
 
-		refClient := grpcreflect.NewClient(refCtx, reflectpb.NewServerReflectionClient(cc))
+		refClient := grpcreflect.NewClientAuto(refCtx, cc)
 
 		mtd, err = protodesc.GetMethodDescFromReflect(c.call, refClient)
 	}
@@ -121,7 +120,7 @@ func NewRequester(c *RunConfig) (*Requester, error) {
 	md := mtd.GetInputType()
 	payloadMessage := dynamic.NewMessage(md)
 	if payloadMessage == nil {
-		return nil, fmt.Errorf("No input type of method: %s", mtd.GetName())
+		return nil, fmt.Errorf("no input type of method: %s", mtd.GetName())
 	}
 
 	// fill in the rest
@@ -130,7 +129,7 @@ func NewRequester(c *RunConfig) (*Requester, error) {
 	if c.dataProviderFunc != nil {
 		reqr.dataProvider = c.dataProviderFunc
 	} else {
-		defaultDataProvider, err := newDataProvider(reqr.mtd, c.binary, c.dataFunc, c.data, c.funcs)
+		defaultDataProvider, err := newDataProvider(reqr.mtd, c.binary, c.dataFunc, c.data, !c.disableTemplateFuncs, !c.disableTemplateData, c.funcs)
 		if err != nil {
 			return nil, err
 		}
@@ -140,7 +139,7 @@ func NewRequester(c *RunConfig) (*Requester, error) {
 	if c.mdProviderFunc != nil {
 		reqr.metadataProvider = c.mdProviderFunc
 	} else {
-		defaultMDProvider, err := newMetadataProvider(reqr.mtd, c.metadata, c.funcs)
+		defaultMDProvider, err := newMetadataProvider(reqr.mtd, c.metadata, !c.disableTemplateFuncs, !c.disableTemplateData, c.funcs)
 		if err != nil {
 			return nil, err
 		}
@@ -228,7 +227,7 @@ func (b *Requester) Finish() *Report {
 	<-b.reporter.done
 
 	if b.config.hasLog {
-		b.config.log.Debug("Finilizing report")
+		b.config.log.Debug("Finalizing report")
 	}
 
 	var r StopReason
@@ -292,7 +291,7 @@ func (b *Requester) newClientConn(withStatsHandler bool) (*grpc.ClientConn, erro
 	var opts []grpc.DialOption
 
 	if b.config.insecure {
-		opts = append(opts, grpc.WithInsecure())
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	} else {
 		opts = append(opts, grpc.WithTransportCredentials(b.config.creds))
 	}
@@ -343,7 +342,8 @@ func (b *Requester) newClientConn(withStatsHandler bool) (*grpc.ClientConn, erro
 	}
 
 	if b.config.lbStrategy != "" {
-		opts = append(opts, grpc.WithBalancerName(b.config.lbStrategy))
+		grpcServiceConfig := fmt.Sprintf(`{"loadBalancingPolicy":"%s"}`, b.config.lbStrategy)
+		opts = append(opts, grpc.WithDefaultServiceConfig(grpcServiceConfig))
 	}
 
 	// create client connection
@@ -389,17 +389,18 @@ func (b *Requester) runWorkers(wt load.WorkerTicker, p load.Pacer) error {
 					}
 
 					w := Worker{
-						ticks:            ticks,
-						active:           true,
-						stub:             b.stubs[n],
-						mtd:              b.mtd,
-						config:           b.config,
-						stopCh:           make(chan bool),
-						workerID:         wID,
-						dataProvider:     b.dataProvider,
-						metadataProvider: b.metadataProvider,
-						streamRecv:       b.config.recvMsgFunc,
-						msgProvider:      b.config.dataStreamFunc,
+						ticks:                         ticks,
+						active:                        true,
+						stub:                          b.stubs[n],
+						mtd:                           b.mtd,
+						config:                        b.config,
+						stopCh:                        make(chan bool),
+						workerID:                      wID,
+						dataProvider:                  b.dataProvider,
+						metadataProvider:              b.metadataProvider,
+						streamRecv:                    b.config.recvMsgFunc,
+						msgProvider:                   b.config.dataStreamFunc,
+						streamInterceptorProviderFunc: b.config.streamInterceptorProviderFunc,
 					}
 
 					wc++ // increment worker id

@@ -5,6 +5,8 @@ on:
     branches:
     - master
     paths:
+    - 'go.mod'
+    - 'go.sum'
     - '*.go'
     - '*/*.go'
     - '*/*/*.go'
@@ -17,6 +19,8 @@ on:
     branches:
     - master
     paths:
+    - 'go.mod'
+    - 'go.sum'
     - '*.go'
     - '*/*.go'
     - '*/*/*.go'
@@ -25,43 +29,34 @@ on:
     - '*/*/*/*/*/*.go'
     - '*/*/*/*/*/*/*.go'
     - '*/*/*/*/*/*/*/*.go'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
       GO111MODULE: on
-      GOLANGCI_LINT_VERSION: v1.31.0
+      GOLANGCI_LINT_VERSION: v1.58.0
 
     steps:
-    - name: Set up Go
-      uses: actions/setup-go@v1
-      with:
-        go-version: 1.16
-      id: go
     - name: Check out code
-      uses: actions/checkout@v2
-    - name: Cache Go modules
-      uses: actions/cache@v1
-      id: cache-go-mod
+      uses: actions/checkout@v5
+    - name: Set up Go
+      uses: actions/setup-go@v6
       with:
-        path: ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-    - name: Cache bin directory
-      id: cache-go-bin
-      uses: actions/cache@v1
+        go-version: 1.23.0
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v2
       with:
-        path: ~/go/bin
-        key: ${{ runner.os }}-go-bin-${{ env.GOLANGCI_LINT_VERSION }}
-    - name: Install tparse
-      if: steps.cache-go-bin.outputs.cache-hit != 'true'
-      run: go get github.com/mfridman/tparse
-    - name: Install golangci-lint
-      if: steps.cache-go-bin.outputs.cache-hit != 'true'
-      run: curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $HOME/go/bin $GOLANGCI_LINT_VERSION
-    - name: Lint
-      run: $HOME/go/bin/golangci-lint run --timeout=2m ./...
+        version: v1.58.0
     - name: Test
-      run: go test -failfast -race -covermode=atomic -coverprofile=coverage.txt -cover -json ./... | $HOME/go/bin/tparse
+      run: go test -failfast -race
+
+  build_docker_image:
+    name: Build Docker image from latest tag
+    runs-on: ubuntu-latest
+    steps:
+    - name: Build image
+      run: docker build https://github.com/bojand/ghz.git
+      env:
+        DOCKER_BUILDKIT: '1'
